@@ -50,7 +50,7 @@ python server/run.py                 # 或双击 server/start.bat
 
 ## 三、安卓 App
 
-下载 [Releases](../../releases) 里的 `屏幕翻译-v1.0.apk`，或者自己编译：
+下载 [Releases](../../releases) 里的 `screen-translate-v1.0.apk`，或者自己编译：
 
 ```bat
 cd android
