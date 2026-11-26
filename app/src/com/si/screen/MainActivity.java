@@ -77,6 +77,13 @@ public class MainActivity extends Activity {
         flp.topMargin = pad(16);
         foot.setGravity(Gravity.CENTER);
         root.addView(foot, flp);
+        TextView log = text("运行日志 / 诊断", 12, 0xFF6B7686);
+        log.setGravity(Gravity.CENTER);
+        log.setPadding(0, dp(14), 0, 0);
+        log.setOnClickListener(v -> showLog());
+        root.addView(log);
+        Logs.install(this);
+        Logs.w(this, "app start");
 
         setContentView(sv);
         refresh();
@@ -415,6 +422,22 @@ public class MainActivity extends Activity {
         lp.bottomMargin = pad(10);
         e.setLayoutParams(lp);
         return e;
+    }
+
+    private void showLog() {
+        TextView tv = new TextView(this);
+        tv.setText(Logs.tail(this, 8000));
+        tv.setTextSize(11);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(dp(16), dp(10), dp(16), dp(10));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("运行日志")
+                .setView(sv)
+                .setPositiveButton("关闭", null)
+                .setNeutralButton("清空", (d, w) -> Logs.clear(this))
+                .show();
     }
 
     private void toast(String s) {

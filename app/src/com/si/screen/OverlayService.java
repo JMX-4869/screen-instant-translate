@@ -58,6 +58,7 @@ public class OverlayService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        Logs.install(this);
         wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         SharedPreferences sp = getSharedPreferences("si", 0);
         key = sp.getString("key", "");
@@ -189,57 +190,81 @@ public class OverlayService extends Service {
         }
         if (busy) return;
         if (key.isEmpty()) {
-            showHud("还没填 API Key，先回 App 设置");
-            main.postDelayed(this::hideHud, 2200);
+            fail("还没填 API Key，回 App 设置里粘贴");
             return;
         }
         if (!new ModelStore(this).installed(Models.DET)) {
-            showHud("还没下「文字检测」模型");
-            main.postDelayed(this::hideHud, 2200);
+            fail("还没下「文字检测」模型");
             return;
         }
         busy = true;
-        showHud("正在识别文字…");
+        showHud("正在识别文字…", false);
         io.execute(() -> {
+            long t0 = System.currentTimeMillis();
             try {
                 Bitmap bmp = mirror == null ? null : mirror.grab(650);
                 if (bmp == null) {
-                    main.post(() -> {
-                        hideHud();
-                        toast("抓屏失败");
-                    });
+                    main.post(() -> fail("抓屏失败，重开一次录屏授权"));
                     return;
                 }
                 OcrRunner ocr = new OcrRunner(new ModelStore(this));
                 List<OcrEngine.Line> lines = ocr.run(bmp);
+                long t1 = System.currentTimeMillis();
+                Logs.w(this, "ocr " + (t1 - t0) + "ms lines=" + lines.size());
                 if (lines.isEmpty()) {
                     bmp.recycle();
-                    main.post(() -> {
-                        hideHud();
-                        toast("这屏没识别到文字");
-                    });
+                    main.post(() -> fail("这屏没识别到文字"));
                     return;
                 }
                 main.post(() -> hudSay("正在翻译 " + lines.size() + " 行…"));
                 List<String> src = new ArrayList<>();
                 for (OcrEngine.Line l : lines) src.add(l.text);
                 List<String> tr = Translator.translate(src, key, base, model);
+                long t2 = System.currentTimeMillis();
+                int nonEmpty = 0;
+                for (String s : tr) if (s != null && !s.isEmpty()) nonEmpty++;
+                Logs.w(this, "mt " + (t2 - t1) + "ms got=" + nonEmpty + "/" + tr.size()
+                        + " model=" + model);
+                if (nonEmpty == 0) {
+                    bmp.recycle();
+                    main.post(() -> fail("翻译返回空（Key/模型名/额度？）"));
+                    return;
+                }
                 final List<OcrEngine.Line> fl = lines;
                 final int w = bmp.getWidth(), h = bmp.getHeight();
                 bmp.recycle();
                 main.post(() -> {
-                    hideHud();
-                    show(fl, tr, w, h);
+                    try {
+                        show(fl, tr, w, h);
+                    } catch (Throwable t) {
+                        fail("显示失败：" + msg(t));
+                    }
                 });
             } catch (Throwable t) {
-                String m = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-                main.post(() -> {
-                    hideHud();
-                    toast("失败：" + m);
-                });
+                String m = msg(t);
+                Logs.w(this, "ERR " + m);
+                main.post(() -> fail(m));
             }
         });
     }
+
+    private static String msg(Throwable t) {
+        String m = t.getMessage();
+        if (m == null) m = t.getClass().getSimpleName();
+        if (m.length() > 90) m = m.substring(0, 90) + "…";
+        return m;
+    }
+
+    /** 出错统一用胶囊提示（很多机型会吞掉后台 Toast）。 */
+    private void fail(String s) {
+        busy = false;
+        Logs.w(this, "FAIL " + s);
+        showHud(s, true);
+        main.removeCallbacks(hideLater);
+        main.postDelayed(hideLater, 4000);
+    }
+
+    private final Runnable hideLater = () -> hideHud();
 
     /** 顶部小胶囊：正在识别 / 正在翻译。点球先出这个，保证有明显反馈。 */
     private final Runnable openApp = () -> {
@@ -251,7 +276,7 @@ public class OverlayService extends Service {
         }
     };
 
-    private void showHud(String s) {
+    private void showHud(String s, boolean err) {
         float d = getResources().getDisplayMetrics().density;
         if (hud == null) {
             LinearLayout box = new LinearLayout(this);
@@ -286,6 +311,11 @@ public class OverlayService extends Service {
                     PixelFormat.TRANSLUCENT);
             hudLp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
             hudLp.y = (int) (72 * d);
+        }
+        try {
+            GradientDrawable bg = (GradientDrawable) hud.getBackground();
+            bg.setColor(err ? 0xF02A1218 : 0xF0141A24);
+        } catch (Throwable ignored) {
         }
         hudText.setText(s);
         if (hud.getParent() == null) {
@@ -327,7 +357,14 @@ public class OverlayService extends Service {
             wm.addView(tv, lp);
         }
         tv.show(lines, tr, w, h);
-        toast(tv.count() == 0 ? "没有可显示的译文" : "译文 " + tv.count() + " 处 · 再点球关闭");
+        if (tv.count() == 0) {
+            fail("译文都为空，检查模型语言");
+        } else {
+            hideHud();
+            showHud("译文 " + tv.count() + " 处 · 再点球关闭", false);
+            main.removeCallbacks(hideLater);
+            main.postDelayed(hideLater, 1600);
+        }
     }
 
     private void removeOverlay() {
