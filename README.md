@@ -81,3 +81,13 @@ android/
 - Android 14 每次重开 App 都要重新授权录屏
 
 MIT License
+
+---
+
+## 独立版（v2，推荐）
+
+上面是"电脑跑服务 + 手机当客户端"。**v2 把 OCR 搬进了手机**，电脑不用开：
+
+- 模型按需下载：文字检测 4.5MB（共用）+ 日 9.3 / 中 10.4 / 英 7.3 / 繁中 10.6 MB
+- APK 约 17MB（含 onnxruntime arm64），识别离线、翻译联网
+- 源码在 `app/`，发布在 [Releases](../../releases) 的 `screen-translate-v2.0.apk`
