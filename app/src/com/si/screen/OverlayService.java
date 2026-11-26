@@ -13,6 +13,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.GradientDrawable;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
@@ -24,6 +25,9 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.si.ocr.OcrEngine;
@@ -39,10 +43,15 @@ public class OverlayService extends Service {
     private View ball;
     private TranslateView tv;
     private MediaProjection mp;
+    private ScreenMirror mirror;
     private String key, model, base;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private WindowManager.LayoutParams ballLp;
+    private View hud;
+    private TextView hudText;
+    private WindowManager.LayoutParams hudLp;
+    private boolean busy;
     private int downX, downY;
     private float startX, startY;
 
@@ -80,6 +89,14 @@ public class OverlayService extends Service {
                 }, main);
             }
             addBall();
+            try {
+                DisplayMetrics dm = new DisplayMetrics();
+                wm.getDefaultDisplay().getRealMetrics(dm);
+                mirror = new ScreenMirror();
+                mirror.start(mp, dm.widthPixels, dm.heightPixels, dm.densityDpi, main);
+            } catch (Throwable t) {
+                toast("屏幕镜像启动失败");
+            }
         }
         return START_STICKY;
     }
@@ -140,14 +157,22 @@ public class OverlayService extends Service {
                     downY = (int) e.getRawY();
                     startX = ballLp.x;
                     startY = ballLp.y;
+                    main.postDelayed(openApp, 700);
                     return true;
                 case MotionEvent.ACTION_MOVE:
+                    if (Math.abs(e.getRawX() - downX) > 12 || Math.abs(e.getRawY() - downY) > 12) {
+                        main.removeCallbacks(openApp);
+                    }
                     ballLp.x = (int) (startX - (e.getRawX() - downX));
                     ballLp.y = (int) (startY + (e.getRawY() - downY));
                     wm.updateViewLayout(ball, ballLp);
                     return true;
                 case MotionEvent.ACTION_UP:
-                    if (Math.abs(e.getRawX() - downX) <= 12 && Math.abs(e.getRawY() - downY) <= 12) {
+                case MotionEvent.ACTION_CANCEL:
+                    main.removeCallbacks(openApp);
+                    if (e.getActionMasked() == MotionEvent.ACTION_UP
+                            && Math.abs(e.getRawX() - downX) <= 12
+                            && Math.abs(e.getRawY() - downY) <= 12) {
                         translate();
                     }
                     return true;
@@ -162,39 +187,127 @@ public class OverlayService extends Service {
             removeOverlay();
             return;
         }
+        if (busy) return;
         if (key.isEmpty()) {
-            toast("先在 App 里填 API Key");
+            showHud("还没填 API Key，先回 App 设置");
+            main.postDelayed(this::hideHud, 2200);
             return;
         }
-        toast("识别中…");
+        if (!new ModelStore(this).installed(Models.DET)) {
+            showHud("还没下「文字检测」模型");
+            main.postDelayed(this::hideHud, 2200);
+            return;
+        }
+        busy = true;
+        showHud("正在识别文字…");
         io.execute(() -> {
             try {
-                DisplayMetrics dm = new DisplayMetrics();
-                wm.getDefaultDisplay().getRealMetrics(dm);
-                Bitmap bmp = Capture.shot(mp, dm.widthPixels, dm.heightPixels, dm.densityDpi);
+                Bitmap bmp = mirror == null ? null : mirror.grab(650);
                 if (bmp == null) {
-                    main.post(() -> toast("抓屏失败"));
+                    main.post(() -> {
+                        hideHud();
+                        toast("抓屏失败");
+                    });
                     return;
                 }
                 OcrRunner ocr = new OcrRunner(new ModelStore(this));
                 List<OcrEngine.Line> lines = ocr.run(bmp);
                 if (lines.isEmpty()) {
-                    main.post(() -> toast("这屏没识别到文字"));
                     bmp.recycle();
+                    main.post(() -> {
+                        hideHud();
+                        toast("这屏没识别到文字");
+                    });
                     return;
                 }
+                main.post(() -> hudSay("正在翻译 " + lines.size() + " 行…"));
                 List<String> src = new ArrayList<>();
                 for (OcrEngine.Line l : lines) src.add(l.text);
                 List<String> tr = Translator.translate(src, key, base, model);
                 final List<OcrEngine.Line> fl = lines;
                 final int w = bmp.getWidth(), h = bmp.getHeight();
                 bmp.recycle();
-                main.post(() -> show(fl, tr, w, h));
+                main.post(() -> {
+                    hideHud();
+                    show(fl, tr, w, h);
+                });
             } catch (Throwable t) {
                 String m = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-                main.post(() -> toast("失败：" + m));
+                main.post(() -> {
+                    hideHud();
+                    toast("失败：" + m);
+                });
             }
         });
+    }
+
+    /** 顶部小胶囊：正在识别 / 正在翻译。点球先出这个，保证有明显反馈。 */
+    private final Runnable openApp = () -> {
+        try {
+            Intent i = new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Throwable ignored) {
+        }
+    };
+
+    private void showHud(String s) {
+        float d = getResources().getDisplayMetrics().density;
+        if (hud == null) {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.HORIZONTAL);
+            box.setGravity(Gravity.CENTER_VERTICAL);
+            GradientDrawable g = new GradientDrawable();
+            g.setColor(0xF0141A24);
+            g.setCornerRadius(20 * d);
+            box.setBackground(g);
+            int p = (int) (14 * d);
+            box.setPadding(p, (int) (7 * d), (int) (16 * d), (int) (7 * d));
+            ProgressBar pb = new ProgressBar(this);
+            pb.setIndeterminate(true);
+            try {
+                pb.getIndeterminateDrawable().setTint(Color.WHITE);
+            } catch (Throwable ignored) {
+            }
+            box.addView(pb, new LinearLayout.LayoutParams((int) (16 * d), (int) (16 * d)));
+            hudText = new TextView(this);
+            hudText.setTextColor(Color.WHITE);
+            hudText.setTextSize(13);
+            LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+            tp.leftMargin = (int) (10 * d);
+            box.addView(hudText, tp);
+            hud = box;
+            hudLp = new WindowManager.LayoutParams(-2, -2,
+                    Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                            : WindowManager.LayoutParams.TYPE_PHONE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT);
+            hudLp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            hudLp.y = (int) (72 * d);
+        }
+        hudText.setText(s);
+        if (hud.getParent() == null) {
+            try {
+                wm.addView(hud, hudLp);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void hudSay(String s) {
+        if (hudText != null) hudText.setText(s);
+    }
+
+    private void hideHud() {
+        busy = false;
+        if (hud != null && hud.getParent() != null) {
+            try {
+                wm.removeView(hud);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private void show(List<OcrEngine.Line> lines, List<String> tr, int w, int h) {
@@ -239,6 +352,10 @@ public class OverlayService extends Service {
             } catch (Throwable ignored) {
             }
             ball = null;
+        }
+        if (mirror != null) {
+            mirror.stop();
+            mirror = null;
         }
         if (mp != null) {
             try {
