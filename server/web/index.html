@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>页内即时翻译</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font:15px/1.6 -apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:#0f1115; color:#e8eaef; padding:18px 16px 60px; }
+  h1 { font-size:19px; margin:6px 0 14px; }
+  h2 { font-size:14px; margin:22px 0 8px; color:#9aa4b2; font-weight:600; letter-spacing:.02em; }
+  .card { background:#171a21; border:1px solid #262b36; border-radius:14px; padding:14px; margin-bottom:12px; }
+  a.btn, button { display:inline-block; background:#2b6ef6; color:#fff; border:0; border-radius:10px;
+         padding:10px 16px; font-size:15px; font-weight:600; text-decoration:none; cursor:pointer; }
+  button.ghost { background:#242a35; color:#cfd6e2; font-weight:500; }
+  code, pre { background:#0b0d11; border:1px solid #232936; border-radius:8px; padding:2px 6px;
+         font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; word-break:break-all; }
+  pre { padding:10px; overflow:auto; }
+  input { width:100%; background:#0b0d11; border:1px solid #2a3140; color:#e8eaef; border-radius:9px;
+         padding:10px 12px; font-size:15px; margin:4px 0 10px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .muted { color:#8b95a5; font-size:13px; }
+  #drop { border:1.5px dashed #2f3746; border-radius:12px; padding:26px 12px; text-align:center; color:#8b95a5; }
+  #stage { position:relative; margin-top:12px; display:none; }
+  #stage img { display:block; width:100%; height:auto; border-radius:8px; }
+  #ov { position:absolute; inset:0; pointer-events:none; }
+  .bx { position:absolute; background:rgba(255,255,255,.94); color:#111; border-radius:4px;
+        padding:0 2px; line-height:1.15; overflow:hidden; box-shadow:0 0 0 1px rgba(0,0,0,.12); }
+  .ok { color:#4ade80; } .bad { color:#f87171; }
+</style>
+</head>
+<body>
+<h1>页内即时翻译</h1>
+<div class="muted" id="health">检查服务…</div>
+
+<h2>1 · 装到手机浏览器</h2>
+<div class="card">
+  <p class="muted" style="margin-top:0">安卓用 Kiwi / Firefox，把下面按钮拖到书签栏；或长按复制地址存成书签。打开漫画页后点它，右下角出现「译」。</p>
+  <a class="btn" id="bm" href="#" onclick="return false">译 · 页内翻译</a>
+  <button class="ghost" style="margin-left:8px" onclick="copyBm(this)">复制书签地址</button>
+  <p class="muted" style="margin-bottom:0">油猴也可用：新建脚本，<code>// @match</code> 填漫画站，正文一行：</p>
+  <pre id="userscript">// @require   <span id="req"></span></pre>
+</div>
+
+<h2>2 · 翻译接口</h2>
+<div class="card">
+  <input id="key" placeholder="硅基流动 API Key（留空则用有道兜底）">
+  <input id="model" placeholder="模型，如 Qwen/Qwen3.5-9B">
+  <div class="row"><button onclick="saveCfg()">保存</button><span class="muted" id="cfgtip"></span></div>
+</div>
+
+<h2>3 · 截图试试</h2>
+<div class="card">
+  <div id="drop">点这里选图 / 把截图粘贴进来 / 拖入图片</div>
+  <input type="file" id="file" accept="image/*" hidden>
+  <div id="stage"><img id="shot"><div id="ov"></div></div>
+  <div class="muted" id="stat"></div>
+</div>
+
+<script>
+const ORIGIN = location.origin;
+const bmCode = "javascript:(function(){var s=document.createElement('script');s.src='" + ORIGIN + "/bm.js?'+Date.now();document.documentElement.appendChild(s);})()";
+document.getElementById('bm').href = bmCode;
+document.getElementById('req').textContent = ORIGIN + "/bm.js";
+document.getElementById('userscript').onclick = () => {
+  navigator.clipboard && navigator.clipboard.writeText(`// ==UserScript==\n// @name 页内即时翻译\n// @match *://*/*\n// @require ${ORIGIN}/bm.js\n// @grant none\n// ==/UserScript==`);
+};
+
+function copyBm(btn){
+  const done = () => { btn.textContent = '已复制'; setTimeout(()=>btn.textContent='复制书签地址', 1500); };
+  if (navigator.clipboard) navigator.clipboard.writeText(bmCode).then(done, done);
+  else { const t=document.createElement('textarea'); t.value=bmCode; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); done(); }
+}
+
+async function health(){
+  const el = document.getElementById('health');
+  try{
+    const r = await fetch('/api/health'); const d = await r.json();
+    el.innerHTML = '服务在线 · 翻译接口 ' + (d.key_set ? '<span class="ok">已配 Key（'+d.model+'）</span>' : '<span class="bad">未配 Key，只会识别不会翻译</span>');
+  }catch(e){ el.innerHTML = '<span class="bad">服务异常</span>'; }
+}
+health();
+
+async function saveCfg(){
+  const api_key = document.getElementById('key').value.trim();
+  const model = document.getElementById('model').value.trim();
+  const body = {}; if(api_key) body.api_key = api_key; if(model) body.model = model;
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  document.getElementById('cfgtip').textContent = '已保存';
+  document.getElementById('key').value = ''; document.getElementById('key').placeholder = 'Key 已保存（重新输入可覆盖）';
+  health();
+}
+
+const drop = document.getElementById('drop'), file = document.getElementById('file');
+drop.onclick = () => file.click();
+file.onchange = e => e.target.files[0] && run(e.target.files[0]);
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if(f) run(f); });
+document.addEventListener('paste', e => {
+  for (const it of e.clipboardData.items) if (it.type.startsWith('image/')) run(it.getAsFile());
+});
+
+function b64(f){ return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); }); }
+
+async function run(f){
+  const data = await b64(f);
+  const img = document.getElementById('shot'), ov = document.getElementById('ov'), st = document.getElementById('stat');
+  const stage = document.getElementById('stage');
+  stage.style.display = 'block'; ov.innerHTML = ''; st.textContent = '识别中…';
+  img.src = data;
+  const t0 = performance.now();
+  const r = await fetch('/api/translate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items:[{id:'test', data}]})});
+  const d = await r.json(); const res = d.results.test;
+  if (res.error) { st.textContent = '出错：' + res.error; return; }
+  st.textContent = `语言 ${res.lang} · 本页 ${res.ms}ms（OCR ${res.ocr_ms||'-'}ms）· ${res.lines.length} 行` + (res.cached?' · 缓存':'');
+  const paint = () => {
+    ov.innerHTML = '';
+    const W = img.clientWidth, H = img.clientHeight;
+    res.lines.forEach(l => {
+      if (!l.tr) return;
+      const vertical = l.h / Math.max(l.w,1e-6) > 2.2;
+      const el = document.createElement('div'); el.className = 'bx';
+      el.textContent = l.tr;
+      const bw = Math.max(6, l.w * W), bh = Math.max(6, l.h * H);
+      el.style.left = (l.x*W) + 'px'; el.style.top = (l.y*H) + 'px';
+      el.style.maxWidth = (bw*1.12+6) + 'px';
+      el.style.fontSize = (vertical ? Math.max(9, bw*0.82) : Math.max(9, bh*0.72)) + 'px';
+      if (vertical) { el.style.writingMode = 'vertical-rl'; el.style.maxHeight = (bh*1.15)+'px'; }
+      else el.style.maxHeight = (bh*1.5)+'px';
+      ov.appendChild(el);
+    });
+  };
+  img.onload = paint; if (img.complete) paint();
+  addEventListener('resize', paint);
+  console.log('total', Math.round(performance.now()-t0), 'ms');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+server/config.json
+server/.cache/
+server/models/*.onnx
+server/models/*.txt
+!server/models/download.py
+
+# android
+android/build/
+android/*.keystore
+*.apk
+
+# os
+.DS_Store
+Thumbs.db
